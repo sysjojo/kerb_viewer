@@ -110,6 +110,7 @@
   <script>
     // GitHub Actions経由で自動置換されます
     const GAS_WEB_APP_URL = '__GAS_WEB_APP_URL__';
+    const STORAGE_KEY = 'barrier_free_map_token';
 
     const map = L.map('map').setView([33.9479, 130.9634], 17);
 
@@ -133,6 +134,19 @@
     };
 
     let allMarkersData = [];
+
+    // 起動時にローカルストレージからトークンを復元してテキストボックスに反映
+    window.addEventListener('DOMContentLoaded', () => {
+      const savedToken = localStorage.getItem(STORAGE_KEY);
+      if (savedToken) {
+        document.getElementById('token-input').value = savedToken;
+      }
+    });
+
+    // テキストボックスに入力があった時にリアルタイムでローカルストレージを更新
+    document.getElementById('token-input').addEventListener('input', (e) => {
+      localStorage.setItem(STORAGE_KEY, e.target.value);
+    });
 
     function setStatus(msg) {
       document.getElementById('status').textContent = msg;
@@ -272,7 +286,8 @@
         });
 
         setStatus(`${processedData.length} 件をスプレッドシートへ保存中...`);
-        const token = document.getElementById('token-input').value;
+        // ローカルストレージからトークンを取得して送信に使用
+        const token = localStorage.getItem(STORAGE_KEY) || '';
 
         const postRes = await fetch(GAS_WEB_APP_URL, {
           method: 'POST',

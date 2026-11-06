@@ -1,1 +1,305 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>バリアフリーマップ (GitHub Pages版)</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    body, html {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      font-family: sans-serif;
+    }
+    #map {
+      width: 100%;
+      height: 100vh;
+    }
+    #controls {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: white;
+      padding: 12px 16px;
+      border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+      z-index: 1000;
+      line-height: 1.6;
+      width: 260px;
+    }
+    #controls label {
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+      font-size: 13px;
+      margin-bottom: 4px;
+    }
+    .dot {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      margin-right: 6px;
+      margin-left: 4px;
+      flex-shrink: 0;
+    }
+    .input-token {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 5px;
+      margin-top: 6px;
+      font-size: 12px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    .btn-sync {
+      margin-top: 8px;
+      width: 100%;
+      padding: 8px;
+      background: #007bff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    .btn-sync:disabled {
+      background: #999;
+      cursor: not-allowed;
+    }
+    #status {
+      font-size: 12px;
+      color: #555;
+      margin-top: 6px;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
 
+  <div id="controls">
+    <b>表示フィルタ（4種）</b>
+    <label>
+      <input type="checkbox" id="chk-wheelchair-yes" checked>
+      <span class="dot" style="background:#28a745;"></span>wheelchair=yes（店舗・道）
+    </label>
+    <label>
+      <input type="checkbox" id="chk-kerb-lowered" checked>
+      <span class="dot" style="background:#17a2b8;"></span>通れる縁石 (kerb=lowered)
+    </label>
+    <label>
+      <input type="checkbox" id="chk-wheelchair-no" checked>
+      <span class="dot" style="background:#dc3545;"></span>wheelchair=no（道）
+    </label>
+    <label>
+      <input type="checkbox" id="chk-kerb-other" checked>
+      <span class="dot" style="background:#fd7e14;"></span>通れない縁石 (≠lowered,flush)
+    </label>
+
+    <hr style="margin: 10px 0; border: none; border-top: 1px solid #ddd;">
+    
+    <input type="password" id="token-input" class="input-token" placeholder="更新用トークン（設定時のみ）">
+    <button id="btn-fetch" class="btn-sync" onclick="fetchAndSyncOSMData()">現在地のOSM取得＆保存</button>
+    <div id="status">準備完了</div>
+  </div>
+
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    // GitHub Actions経由で自動置換されます
+    const GAS_WEB_APP_URL = '__GAS_WEB_APP_URL__';
+
+    const map = L.map('map').setView([33.9479, 130.9634], 17);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    const layers = {
+      wheelchair_yes: L.layerGroup(),
+      kerb_lowered: L.layerGroup(),
+      wheelchair_no: L.layerGroup(),
+      kerb_other: L.layerGroup()
+    };
+
+    const colorMap = {
+      wheelchair_yes: '#28a745',
+      kerb_lowered:   '#17a2b8',
+      wheelchair_no:  '#dc3545',
+      kerb_other:     '#fd7e14'
+    };
+
+    let allMarkersData = [];
+
+    function setStatus(msg) {
+      document.getElementById('status').textContent = msg;
+    }
+
+    async function loadMapData() {
+      setStatus("スプレッドシートから読込中...");
+      try {
+        const response = await fetch(GAS_WEB_APP_URL);
+        const data = await response.json();
+        if (data.error) throw new Error(data.error);
+        
+        allMarkersData = data || [];
+        updateMapMarkers();
+        setStatus(`表示中: ${allMarkersData.length} 件`);
+      } catch (err) {
+        setStatus("読込失敗: " + err.message);
+      }
+    }
+
+    function updateMapMarkers() {
+      Object.values(layers).forEach(layer => layer.clearLayers());
+
+      allMarkersData.forEach(item => {
+        const lat = parseFloat(item.Lat);
+        const lon = parseFloat(item.Lon);
+        if (isNaN(lat) || isNaN(lon)) return;
+
+        const color = colorMap[item.Type] || '#666666';
+        const marker = L.circleMarker([lat, lon], {
+          radius: 8,
+          fillColor: color,
+          color: '#ffffff',
+          weight: 2,
+          opacity: 1,
+          fillOpacity: 0.9
+        }).bindPopup(`<b>${item.Name || '名称なし'}</b><br><small>ID: ${item.ID} / 種別: ${item.Type}</small><br>${item.Description || ''}`);
+        
+        if (layers[item.Type]) {
+          layers[item.Type].addLayer(marker);
+        }
+      });
+
+      applyFilter();
+    }
+
+    function applyFilter() {
+      const toggle = (id, layer) => {
+        if (document.getElementById(id).checked) {
+          map.addLayer(layer);
+        } else {
+          map.removeLayer(layer);
+        }
+      };
+      toggle('chk-wheelchair-yes', layers.wheelchair_yes);
+      toggle('chk-kerb-lowered', layers.kerb_lowered);
+      toggle('chk-wheelchair-no', layers.wheelchair_no);
+      toggle('chk-kerb-other', layers.kerb_other);
+    }
+
+    async function fetchAndSyncOSMData() {
+      if (map.getZoom() < 14) {
+        alert("範囲が広すぎます。もう少し地図を拡大してから取得してください。");
+        return;
+      }
+
+      const btn = document.getElementById('btn-fetch');
+      btn.disabled = true;
+      setStatus("OSMからデータ取得中...");
+
+      const bounds = map.getBounds();
+      const bbox = `${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()}`;
+      
+      const query = `[out:json][timeout:25][bbox:${bbox}];(node["wheelchair"="yes"];way["wheelchair"="yes"];way["wheelchair"="no"];node["wheelchair"="no"];node["barrier"="kerb"];);out center qt;`;
+
+      const endpoints = [
+        'https://overpass.kumi.systems/api/interpreter',
+        'https://overpass.private.coffee/api/interpreter',
+        'https://lz4.overpass-api.de/api/interpreter'
+      ];
+
+      let osmData = null;
+      for (const baseUrl of endpoints) {
+        try {
+          const res = await fetch(baseUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+            body: 'data=' + encodeURIComponent(query)
+          });
+          if (res.ok) {
+            osmData = await res.json();
+            break;
+          }
+        } catch (e) {
+          console.warn(`Failed with ${baseUrl}`, e);
+        }
+      }
+
+      if (!osmData) {
+        setStatus("OSMサーバーへの接続に失敗しました");
+        btn.disabled = false;
+        return;
+      }
+
+      try {
+        const processedData = [];
+        (osmData.elements || []).forEach(el => {
+          const lat = el.lat || (el.center && el.center.lat);
+          const lon = el.lon || (el.center && el.center.lon);
+          if (!lat || !lon) return;
+
+          const tags = el.tags || {};
+          let type = null;
+
+          if (tags.barrier === 'kerb') {
+            if (tags.kerb === 'lowered') {
+              type = 'kerb_lowered';
+            } else if (tags.kerb !== 'flush') {
+              type = 'kerb_other';
+            }
+          } else if (tags.wheelchair === 'yes') {
+            type = 'wheelchair_yes';
+          } else if (tags.wheelchair === 'no') {
+            type = 'wheelchair_no';
+          }
+
+          if (!type) return;
+
+          processedData.push({
+            ID: `${el.type}/${el.id}`,
+            Lat: lat,
+            Lon: lon,
+            Type: type,
+            Name: tags.name || tags['name:ja'] || (tags.barrier === 'kerb' ? `縁石 (${tags.kerb || '未設定'})` : '名称なし'),
+            Description: Object.entries(tags).map(([k, v]) => `${k}=${v}`).join(', ')
+          });
+        });
+
+        setStatus(`${processedData.length} 件をスプレッドシートへ保存中...`);
+        const token = document.getElementById('token-input').value;
+
+        const postRes = await fetch(GAS_WEB_APP_URL, {
+          method: 'POST',
+          body: JSON.stringify({ token: token, data: processedData })
+        });
+        const result = await postRes.json();
+
+        if (result.status === 'success') {
+          allMarkersData = processedData;
+          updateMapMarkers();
+          setStatus(`完了: ${processedData.length} 件を保存・表示しました`);
+        } else {
+          throw new Error(result.message);
+        }
+      } catch (err) {
+        setStatus("保存エラー: " + err.message);
+        alert("保存エラー: " + err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    document.querySelectorAll('#controls input[type="checkbox"]').forEach(chk => {
+      chk.addEventListener('change', applyFilter);
+    });
+
+    loadMapData();
+  </script>
+</body>
+</html>
